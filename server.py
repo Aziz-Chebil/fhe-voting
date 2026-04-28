@@ -1,0 +1,62 @@
+# server.py — accepts encrypted ballots over HTTP, sums them without
+# ever holding the secret key, exposes the encrypted tally for the
+# authority to fetch and decrypt elsewhere.
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import Response
+import tenseal as ts
+
+app = FastAPI(title="FHE Voting Server")
+
+# Load the public context once at startup. Note: the server NEVER
+# touches authority_context.bin. If this file existed on the server,
+# the demo's security claim would be a lie.
+PUBLIC_CONTEXT_PATH = "contexts/public_context.bin"
+with open(PUBLIC_CONTEXT_PATH, "rb") as f:
+    PUBLIC_CONTEXT_BYTES = f.read()
+public_context = ts.context_from(PUBLIC_CONTEXT_BYTES)
+
+# In-memory state. Restarting the server wipes the tally — that's
+# fine for now; persistence is a later concern.
+tally = None
+ballot_count = 0
+
+
+@app.get("/public-context")
+def get_public_context():
+    """Voters call this to fetch the public context they encrypt under."""
+    return Response(content=PUBLIC_CONTEXT_BYTES, media_type="application/octet-stream")
+
+
+@app.post("/vote")
+async def submit_vote(request: Request):
+    """Accept one serialized BFV ciphertext, add it to the running tally."""
+    global tally, ballot_count
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="empty request body")
+    try:
+        ballot = ts.bfv_vector_from(public_context, body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"could not parse ballot: {e}")
+
+    if tally is None:
+        tally = ballot
+    else:
+        tally = tally + ballot
+    ballot_count += 1
+    return {"status": "ok", "ballots_received": ballot_count}
+
+
+@app.get("/tally")
+def get_tally():
+    """Return the encrypted tally. Anyone may fetch this; only the
+    authority (which holds the secret key) can decrypt it."""
+    if tally is None:
+        raise HTTPException(status_code=404, detail="no votes submitted yet")
+    return Response(content=tally.serialize(), media_type="application/octet-stream")
+
+
+@app.get("/status")
+def status():
+    """Cheap liveness/sanity endpoint."""
+    return {"ballots_received": ballot_count}

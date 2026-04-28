@@ -1,0 +1,15 @@
+# Secret key material — NEVER commit this
+contexts/authority_context.bin
+
+# Python virtual environment
+venv/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
