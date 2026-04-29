@@ -1,7 +1,8 @@
 # server.py — accepts encrypted ballots over HTTP, sums them without
 # ever holding the secret key, exposes the encrypted tally for the
 # authority to fetch and decrypt elsewhere.
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
+from typing import Optional
 from fastapi.responses import Response
 import tenseal as ts
 
@@ -26,12 +27,21 @@ def get_public_context():
     """Voters call this to fetch the public context they encrypt under."""
     return Response(content=PUBLIC_CONTEXT_BYTES, media_type="application/octet-stream")
 
+_seen_voters: set[str] = set()
 
 @app.post("/vote")
-async def submit_vote(request: Request):
+async def vote(
+    request: Request,
+    x_voter_id: Optional[str] = Header(default=None, alias="X-Voter-ID"),
+):
     """Accept one serialized BFV ciphertext, add it to the running tally."""
-    global tally, ballot_count
+    if not x_voter_id:
+        raise HTTPException(status_code=400, detail="missing X-Voter-ID header")
+
+    if x_voter_id in _seen_voters:
+        raise HTTPException(status_code=409, detail="voter_id already submitted")
     body = await request.body()
+    global tally, ballot_count
     if not body:
         raise HTTPException(status_code=400, detail="empty request body")
     try:
@@ -44,7 +54,9 @@ async def submit_vote(request: Request):
     else:
         tally = tally + ballot
     ballot_count += 1
-    return {"status": "ok", "ballots_received": ballot_count}
+    _seen_voters.add(x_voter_id)  # only after successful tally update
+    return {"status": "ok"}
+
 
 
 @app.get("/tally")
