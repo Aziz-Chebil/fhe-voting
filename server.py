@@ -28,6 +28,8 @@ def get_public_context():
     return Response(content=PUBLIC_CONTEXT_BYTES, media_type="application/octet-stream")
 
 _seen_voters: set[str] = set()
+MIN_CT_BYTES = 1024
+MAX_CT_BYTES = 1_000_000
 
 @app.post("/vote")
 async def vote(
@@ -40,14 +42,23 @@ async def vote(
 
     if x_voter_id in _seen_voters:
         raise HTTPException(status_code=409, detail="voter_id already submitted")
+
     body = await request.body()
     global tally, ballot_count
-    if not body:
-        raise HTTPException(status_code=400, detail="empty request body")
+
+    # Structural validation: size sanity.
+    if not (MIN_CT_BYTES <= len(body) <= MAX_CT_BYTES):
+        raise HTTPException(
+            status_code=400,
+            detail=f"ciphertext size {len(body)} outside expected range",
+        )
+
+    # Structural validation: deserialization under our public context.
+    # This implicitly verifies the ciphertext's encoded parameters match ours.
     try:
         ballot = ts.bfv_vector_from(public_context, body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"could not parse ballot: {e}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid ciphertext")
 
     if tally is None:
         tally = ballot
@@ -56,7 +67,6 @@ async def vote(
     ballot_count += 1
     _seen_voters.add(x_voter_id)  # only after successful tally update
     return {"status": "ok"}
-
 
 
 @app.get("/tally")
